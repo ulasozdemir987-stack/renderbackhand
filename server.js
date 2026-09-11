@@ -51,7 +51,7 @@ function publicBase(req) {
 
 app.get('/health', (_req, res) => res.json({ ok: true, sessions: sessions.size }))
 
-app.options('*', cors())
+app.options(/.*/, cors())
 
 // This proxy sits between FFmpeg and the Xtream server. FFmpeg requests this
 // URL with Range headers, allowing the upstream connection to be retried by
