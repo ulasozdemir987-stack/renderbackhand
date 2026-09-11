@@ -1,13 +1,21 @@
-RENDER GÜNCELLEME
+TRABZON STREAM PLAYER BACKEND – PROXY GÜNCELLEMESİ
 
-Render'da backend servisini yeni dosyalarla redeploy et.
-Environment variable:
+Render Web Service aynı şekilde çalışır (Docker). Yeni sürümde FFmpeg doğrudan Xtream URL
+sunucusuna gitmez; /source/:id üzerinden Range destekli bir proxy ile bağlanır.
+
+Render Environment Variables:
 DEBUG_PLAYER=1
+PUBLIC_BASE_URL=https://renderbackhand.onrender.com
 
-Sonra film açıldığında Render Logs içinde:
+PUBLIC_BASE_URL sayesinde HLS adresi Vercel yerine doğrudan Render alan adını kullanır.
+
+Deploy sonrası test:
+https://renderbackhand.onrender.com/health
+→ {"ok":true,"sessions":0}
+
+Film açarken Logs'ta şunları görmelisin:
 [STREAM] start ...
-[STREAM] ffmpeg=...
-[STREAM] ffmpeg exit ...
-[STREAM] ready ...
+[PROXY] GET ... range=...
+[STREAM] ready id=... hls=https://renderbackhand.onrender.com/hls/...
 
-satırlarını göreceksin.
+Not: Aynı anda tek aktif player session tutulur.
