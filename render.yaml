@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: trabzon-stream-player
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: "10000"
