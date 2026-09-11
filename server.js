@@ -116,7 +116,7 @@ app.get('/api/debug/source', async (req, res) => {
       result.firstBytes = first.toString('latin1').replace(/[^\x20-\x7e]/g, '.')
       // EBML/Matroska files should begin with the 0x1A45DFA3 EBML element.
       result.ok = first.length >= 4 && first.readUInt32BE(0) === 0x1A45DFA3
-      if (!result.ok && !result.error) result.error = 'İlk byte'lar EBML/Matroska header ile başlamıyor.'
+      if (!result.ok && !result.error) result.error = "İlk byte'lar EBML/Matroska header ile başlamıyor."
     } else {
       result.error = 'Upstream body yok.'
     }
