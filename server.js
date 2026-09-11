@@ -128,6 +128,22 @@ app.post('/api/stream/start', async (req, res) => {
   if (!validSource(sourceUrl)) return safeJson(res, 400, { error: 'Geçerli bir HTTP/HTTPS kaynak URL gerekli.' })
   if (!['movie', 'episode', 'live'].includes(type)) return safeJson(res, 400, { error: 'Geçersiz yayın tipi.' })
 
+  // Prevent duplicate starts for the exact same source while the first one is preparing.
+  for (const [id, current] of sessions) {
+    if (current.sourceUrl === sourceUrl && current.type === type && !current.failed) {
+      const ready = await waitForHealthyPlaylist(current.playlist, current.child, 5_000)
+      if (ready) {
+        return safeJson(res, 200, { sessionId: id, hlsUrl: `${publicBase(req)}/hls/${id}/index.m3u8` })
+      }
+      if (current.startingPromise) {
+        try {
+          const hlsUrl = await current.startingPromise
+          return safeJson(res, 200, { sessionId: id, hlsUrl })
+        } catch {}
+      }
+    }
+  }
+
   // Only one viewer/session is expected. Stop the previous session cleanly.
   for (const id of [...sessions.keys()]) cleanup(id)
 
@@ -136,18 +152,22 @@ app.post('/api/stream/start', async (req, res) => {
   fs.mkdirSync(dir, { recursive: true })
   const playlist = path.join(dir, 'index.m3u8')
   const isLive = type === 'live'
-  const sourceProxyUrl = `http://127.0.0.1:${PORT}/source/${id}`
 
+  // Use FFmpeg directly against the Xtream source. The Xtream endpoints used here
+  // are HTTP media files; disabling HTTP seeking avoids broken/incomplete Range
+  // responses that can make MKV parsing fail at the EBML header.
   const args = [
     '-hide_banner', '-loglevel', DEBUG ? 'warning' : 'error', '-nostdin',
-    '-rw_timeout', '45000000',
-    '-http_seekable', '1',
+    '-rw_timeout', '60000000',
+    '-http_seekable', '0',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
-    '-reconnect_at_eof', isLive ? '1' : '0',
+    '-reconnect_at_eof', '0',
     '-reconnect_delay_max', '10',
     '-user_agent', 'Mozilla/5.0',
-    '-i', sourceProxyUrl,
+    '-probesize', '50M',
+    '-analyzeduration', '20M',
+    '-i', sourceUrl,
     '-map', '0:v:0',
     '-map', '0:a?',
     '-c:v', 'copy',
@@ -158,7 +178,7 @@ app.post('/api/stream/start', async (req, res) => {
     playlist,
   ]
 
-  console.log(`[STREAM] ffmpeg=${FFmpeg} proxy=${sourceProxyUrl} output=${playlist}`)
+  console.log(`[STREAM] ffmpeg=${FFmpeg} direct-source output=${playlist}`)
   if (DEBUG) console.log(`[STREAM] args=${JSON.stringify(args)}`)
 
   const child = spawn(FFmpeg, args, { stdio: ['ignore', 'ignore', 'pipe'] })
@@ -170,7 +190,7 @@ app.post('/api/stream/start', async (req, res) => {
   })
   child.on('error', err => console.error(`[STREAM] spawn error: ${err.message}`))
 
-  const session = { id, dir, child, createdAt: Date.now(), timer: null, sourceUrl, type, stderr }
+  const session = { id, dir, child, createdAt: Date.now(), timer: null, sourceUrl, type, stderr, playlist, startingPromise: null }
   sessions.set(id, session)
   session.timer = setTimeout(() => cleanup(id), isLive ? 4 * 60 * 60_000 : 6 * 60 * 60_000)
 
@@ -188,17 +208,26 @@ app.post('/api/stream/start', async (req, res) => {
     }
   })
 
-  const started = await waitForHealthyPlaylist(playlist, child, 60_000)
-  if (!started) {
-    const err = stderr.trim() || `FFmpeg HLS üretemedi (exit=${child.exitCode ?? 'n/a'}).`
-    console.error(`[STREAM] start failed id=${id}: ${err}`)
-    cleanup(id)
-    return safeJson(res, 502, { error: err })
-  }
+  const startingPromise = (async () => {
+    const started = await waitForHealthyPlaylist(playlist, child, 120_000)
+    if (!started) {
+      const err = stderr.trim() || `FFmpeg HLS üretemedi (exit=${child.exitCode ?? 'n/a'}).`
+      console.error(`[STREAM] start failed id=${id}: ${err}`)
+      cleanup(id)
+      throw new Error(err)
+    }
+    const hlsUrl = `${publicBase(req)}/hls/${id}/index.m3u8`
+    console.log(`[STREAM] ready id=${id} hls=${hlsUrl}`)
+    return hlsUrl
+  })()
+  session.startingPromise = startingPromise
 
-  const hlsUrl = `${publicBase(req)}/hls/${id}/index.m3u8`
-  console.log(`[STREAM] ready id=${id} hls=${hlsUrl}`)
-  safeJson(res, 200, { sessionId: id, hlsUrl })
+  try {
+    const hlsUrl = await startingPromise
+    safeJson(res, 200, { sessionId: id, hlsUrl })
+  } catch (error) {
+    safeJson(res, 502, { error: error instanceof Error ? error.message : 'Player başlatılamadı.' })
+  }
 })
 
 app.delete('/api/stream/:id', (req, res) => {
