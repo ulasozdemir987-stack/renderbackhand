@@ -1,0 +1,13 @@
+RENDER GÜNCELLEME
+
+Render'da backend servisini yeni dosyalarla redeploy et.
+Environment variable:
+DEBUG_PLAYER=1
+
+Sonra film açıldığında Render Logs içinde:
+[STREAM] start ...
+[STREAM] ffmpeg=...
+[STREAM] ffmpeg exit ...
+[STREAM] ready ...
+
+satırlarını göreceksin.
