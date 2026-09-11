@@ -51,6 +51,83 @@ function publicBase(req) {
 
 app.get('/health', (_req, res) => res.json({ ok: true, sessions: sessions.size }))
 
+// Diagnostic endpoint: checks the upstream media URL from Render without exposing
+// the response body. Use only for troubleshooting and remove/disable in production.
+app.get('/api/debug/source', async (req, res) => {
+  const raw = String(req.query.url || '')
+  if (!validSource(raw)) return safeJson(res, 400, { error: 'Geçerli bir HTTP/HTTPS url gerekli.' })
+
+  const result = {
+    ok: false,
+    url: sourceSummary(raw),
+    status: null,
+    statusText: null,
+    headers: {},
+    firstBytes: null,
+    firstBytesHex: null,
+    bytesRead: 0,
+    error: null,
+  }
+
+  try {
+    const upstream = await fetch(raw, {
+      method: 'GET',
+      redirect: 'follow',
+      cache: 'no-store',
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity',
+        'Range': 'bytes=0-1048575',
+      },
+      signal: AbortSignal.timeout(30000),
+    })
+
+    result.status = upstream.status
+    result.statusText = upstream.statusText
+    for (const key of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified', 'server', 'via']) {
+      const value = upstream.headers.get(key)
+      if (value) result.headers[key] = value
+    }
+
+    if (!upstream.ok && upstream.status !== 206) {
+      result.error = `Upstream HTTP ${upstream.status}`
+      return safeJson(res, 200, result)
+    }
+
+    if (upstream.body) {
+      const reader = upstream.body.getReader()
+      const chunks = []
+      let total = 0
+      while (total < 1024 * 1024) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value?.length) continue
+        const remaining = 1024 * 1024 - total
+        const part = value.slice(0, remaining)
+        chunks.push(Buffer.from(part))
+        total += part.length
+        if (total >= 1024 * 1024) break
+      }
+      try { await reader.cancel() } catch {}
+      const first = Buffer.concat(chunks).subarray(0, 64)
+      result.bytesRead = total
+      result.firstBytesHex = first.toString('hex')
+      result.firstBytes = first.toString('latin1').replace(/[^\x20-\x7e]/g, '.')
+      // EBML/Matroska files should begin with the 0x1A45DFA3 EBML element.
+      result.ok = first.length >= 4 && first.readUInt32BE(0) === 0x1A45DFA3
+      if (!result.ok && !result.error) result.error = 'İlk byte'lar EBML/Matroska header ile başlamıyor.'
+    } else {
+      result.error = 'Upstream body yok.'
+    }
+
+    return safeJson(res, 200, result)
+  } catch (error) {
+    result.error = error instanceof Error ? error.message : String(error)
+    return safeJson(res, 200, result)
+  }
+})
+
 app.options(/.*/, cors())
 
 // This proxy sits between FFmpeg and the Xtream server. FFmpeg requests this
